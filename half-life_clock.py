@@ -11,16 +11,31 @@ from datetime import datetime
 BASE = "wavs"
 DEFAULT_VOLUME = 50   # matches hlclock.sh
 
+
+def run_audio_command(command):
+    """Stop with a useful diagnostic if an ALSA command fails."""
+    try:
+        subprocess.run(command, check=True)
+    except subprocess.CalledProcessError as error:
+        raise SystemExit(
+            f"{command[0]} failed (exit status {error.returncode})"
+        ) from None
+    except OSError as error:
+        raise SystemExit(f"Could not run {command[0]}: {error}") from None
+
+
 parser = argparse.ArgumentParser(description="Half-Life 1 talking clock")
 parser.add_argument(
     "-v", "--volume", type=int, default=DEFAULT_VOLUME,
-    help=f"PCM volume percent to set before speaking (default: {DEFAULT_VOLUME}). "
+    help=f"PCM volume percent, 0–100 (default: {DEFAULT_VOLUME}). "
          f"Use 80 for the old hlclock_high.sh behavior."
 )
 args = parser.parse_args()
+if not 0 <= args.volume <= 100:
+    parser.error("--volume must be between 0 and 100 (inclusive)")
 
 ## set PCM volume (was amixer -q -M sset PCM NN% in hlclock*.sh)
-subprocess.run(["amixer", "-q", "-M", "sset", "PCM", f"{args.volume}%"])
+run_audio_command(["amixer", "-q", "-M", "sset", "PCM", f"{args.volume}%"])
 
 ## collect the system time
 ## 12 hour time
@@ -57,4 +72,4 @@ if ampm:
     audio.append(f"{BASE}/{ampm}.wav")
 
 ## Speak the time in series to avoid pauses between files
-subprocess.run(["aplay"] + audio)
+run_audio_command(["aplay"] + audio)
