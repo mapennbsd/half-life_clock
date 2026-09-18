@@ -8,7 +8,7 @@ import argparse
 import subprocess
 from datetime import datetime
 
-BASE = "wavs"
+BASE = "/home/mapenn/hlclock/wavs"
 DEFAULT_VOLUME = 50   # matches hlclock.sh
 
 
