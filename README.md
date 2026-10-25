@@ -48,11 +48,15 @@ ignores SIGTERM.
 
 The Pimoroni Speaker pHAT's 10-LED bar (an SN3218 driver at 0x54 on I2C
 bus 1) follows the clips: their peak level every 1/30 s, a full bar at a
-16-bit peak of 15000, falling over 0.5 s, brightness 128. These are the
-values pivumeter's `speaker-phat` output used. The clock now drives the
+16-bit peak of 15000, decaying by a fifteenth of its height each update
+(pivumeter's 500 ms), brightness 128. These are the values pivumeter's
+`speaker-phat` output used. The clock now drives the
 LEDs itself, so the ALSA chain needs no meter plugin; the meter plugin is
-where aplay deadlocked on 2026-10-14. The bar is the clips' level, not the
-level after the `PCM` volume, so it is the same height at every volume.
+where aplay deadlocked on 2026-10-14. Like pivumeter, which metered after
+the `PCM` softvol control, the bar grows with the volume, but by half as
+much: that control runs from -51 dB to 0 dB, linear in dB under `amixer -M`
+(50% is -25.4 dB), and the full attenuation left the bar nearly dark at
+30-60%. The bar takes half the attenuation in dB (`LED_VOLUME_SHARE`).
 
 A missing smbus module, I2C bus or LED chip prints `VU LEDs off: ...`, and
 the time is still spoken with exit status 0. `--no-leds` skips the LEDs.

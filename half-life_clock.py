@@ -30,16 +30,31 @@ LED_ADDRESS = 0x54
 LED_CHANNELS = (0, 1, 2, 4, 6, 8, 10, 12, 14, 16)  # the 10 LEDs of 18 outputs
 LED_BRIGHTNESS = 128      # pivumeter's brightness
 LED_FULL_SCALE = 15000    # a 16-bit peak this high lights the whole bar
-LED_DECAY = 0.5           # seconds for the bar to fall from full (decay_ms)
+LED_DECAY = 0.5           # pivumeter's decay_ms: each update the bar falls
+                          # by (update time / decay) of its height
 LED_FRAME = 1 / 30        # seconds between updates
+## pivumeter metered after the softvol PCM control, so the bar grew with the
+## volume.  The control spans -51 dB to 0 dB in 0.2 dB steps, and on it
+## amixer -M is linear in dB (measured on moron 2026-10-25: 50% = -25.4 dB).
+## The bar takes half of that attenuation: the full amount, as pivumeter
+## did, left it nearly dark at the usual 30-60%.
+SOFTVOL_MIN_DB = -51.0
+LED_VOLUME_SHARE = 0.5
 
 
 def warn(message):
     print(f"half-life_clock: {message}", file=sys.stderr)
 
 
-def clip_levels(paths, frame=LED_FRAME):
-    """(start second, 16-bit peak) per frame of the clips played in series."""
+def volume_gain(percent):
+    """The bar's gain at an amixer -M percentage: half softvol's, in dB."""
+    if percent <= 0:
+        return 0.0                              # softvol's lowest step mutes
+    return 10 ** (LED_VOLUME_SHARE * SOFTVOL_MIN_DB * (1 - percent / 100) / 20)
+
+
+def clip_levels(paths, gain=1.0, frame=LED_FRAME):
+    """(start second, 16-bit peak after gain) per frame of the clips in series."""
     timeline, offset = [], 0.0
     for path in paths:
         with wave.open(str(path)) as clip:
@@ -58,7 +73,7 @@ def clip_levels(paths, frame=LED_FRAME):
         for first in range(0, frames, step):
             chunk = samples[first * channels:(first + step) * channels]
             peak = max(max(chunk) - centre, centre - min(chunk)) * scale
-            timeline.append((offset + first / rate, peak))
+            timeline.append((offset + first / rate, peak * gain))
         offset += frames / rate
     timeline.append((offset, 0))
     return timeline
@@ -91,13 +106,13 @@ class VuMeter:
     def run(self, timeline, stop):
         """Follow the timeline from now until stop is set, then go dark."""
         times = [start for start, _ in timeline]
-        level, fall = 0.0, LED_FULL_SCALE * LED_FRAME / LED_DECAY
+        level, keep = 0.0, 1 - LED_FRAME / LED_DECAY
         began = time.monotonic()
         try:
             while not stop.wait(LED_FRAME):
                 index = bisect.bisect_right(times, time.monotonic() - began) - 1
                 peak = timeline[index][1] if index >= 0 else 0
-                level = max(peak, level - fall)
+                level = max(peak, level * keep)
                 self.show(level)
         except Exception as error:
             warn(f"VU LEDs stopped: {error}")
@@ -108,10 +123,10 @@ class VuMeter:
                 pass
 
 
-def start_leds(paths):
+def start_leds(paths, volume):
     """Light the VU LEDs for these clips; on any failure, warn and play on."""
     try:
-        timeline = clip_levels(paths)
+        timeline = clip_levels(paths, volume_gain(volume))
         meter = VuMeter()
     except Exception as error:
         warn(f"VU LEDs off: {error}")
@@ -212,7 +227,7 @@ if ampm:
     audio.append(f"{BASE}/{ampm}.wav")
 
 ## Speak the time in series to avoid pauses between files, with the VU
-## LEDs following the clips; the LEDs start just before aplay, close enough
-## for speech
-leds = None if args.no_leds else start_leds(audio)
+## LEDs following the clips at this volume; the LEDs start just before
+## aplay, close enough for speech
+leds = None if args.no_leds else start_leds(audio, args.volume)
 run_audio_command(["aplay"] + audio, args.timeout, leds)

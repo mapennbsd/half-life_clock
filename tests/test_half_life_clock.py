@@ -161,6 +161,16 @@ class ClockCliTests(unittest.TestCase):
                 self.assertEqual(frame[channel], 0, frame)
         self.assert_leds_dark_at_end()
 
+    def test_bar_grows_with_volume(self):
+        lit = {}
+        for volume in ("30", "100", "0"):
+            result, commands = self.run_clock("--volume", volume, player_sleep=0.5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            frames = [w[3] for w in self.led_writes if w[:3] == ["write", 0x54, 0x01]]
+            lit[volume] = max(sum(frame) for frame in frames)
+        self.assertGreater(lit["100"], lit["30"])
+        self.assertEqual(lit["0"], 0)
+
     def test_led_failure_still_plays(self):
         result, commands = self.run_clock(smbus="fail")
         self.assertEqual(result.returncode, 0, result.stderr)
