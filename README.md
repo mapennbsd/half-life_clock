@@ -1,6 +1,6 @@
 # half-life_clock
 
-Version: **1.2.0** (see `VERSION` and Git tag `v1.2.0`).
+Version: **1.2.1** (see `VERSION` and Git tag `v1.2.1`).
 
 A talking clock that announces the current time using voice clips from
 Half-Life 1 (1998 series), sourced from [Calomel.org](https://calomel.org/).
