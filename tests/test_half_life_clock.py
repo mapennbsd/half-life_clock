@@ -1,4 +1,5 @@
-"""CLI regression tests; fake ALSA commands never touch audio hardware."""
+"""CLI regression tests; fake ALSA commands and a fake smbus module never
+touch audio or LED hardware."""
 
 import json
 import os
@@ -36,8 +37,25 @@ class ClockCliTests(unittest.TestCase):
             executable = self.bin_directory / name
             executable.write_text(stub)
             executable.chmod(0o700)
+        ## found before any real smbus through PYTHONPATH; logs each write
+        self.python_directory = self.directory / "python"
+        self.python_directory.mkdir()
+        (self.python_directory / "smbus.py").write_text(
+            "import json, os\n"
+            "def log(*entry):\n"
+            "    with open(os.environ['HLCLOCK_TEST_LOG'], 'a') as log:\n"
+            "        log.write(json.dumps(['smbus', *entry]) + '\\n')\n"
+            "class SMBus:\n"
+            "    def __init__(self, bus):\n"
+            "        if os.environ.get('HLCLOCK_TEST_SMBUS') == 'fail':\n"
+            "            raise OSError(121, 'Remote I/O error')\n"
+            "        log('open', bus)\n"
+            "    def write_i2c_block_data(self, address, register, values):\n"
+            "        log('write', address, register, list(values))\n"
+        )
 
-    def run_clock(self, *arguments, mixer_status=0, player_status=0, player_sleep=0):
+    def run_clock(self, *arguments, mixer_status=0, player_status=0, player_sleep=0,
+                  smbus="ok"):
         if self.log.exists():
             self.log.unlink()
         environment = os.environ.copy()
@@ -47,6 +65,8 @@ class ClockCliTests(unittest.TestCase):
             HLCLOCK_TEST_AMIXER=str(mixer_status),
             HLCLOCK_TEST_APLAY=str(player_status),
             HLCLOCK_TEST_APLAY_SLEEP=str(player_sleep),
+            HLCLOCK_TEST_SMBUS=smbus,
+            PYTHONPATH=str(self.python_directory),
         )
         result = subprocess.run(
             [sys.executable, "-B", str(SCRIPT), *arguments],
@@ -56,11 +76,19 @@ class ClockCliTests(unittest.TestCase):
             text=True,
             timeout=10,
         )
-        commands = (
+        entries = (
             [json.loads(line) for line in self.log.read_text().splitlines()]
             if self.log.exists() else []
         )
+        self.led_writes = [entry[1:] for entry in entries if entry[0] == "smbus"]
+        commands = [entry for entry in entries if entry[0] != "smbus"]
         return result, commands
+
+    def assert_leds_dark_at_end(self):
+        self.assertEqual(
+            self.led_writes[-2:],
+            [["write", 0x54, 0x01, [0] * 18], ["write", 0x54, 0x16, [1]]],
+        )
 
     def test_command_failure_exits_nonzero_and_stops(self):
         for command, mixer_status, player_status, expected_commands in (
@@ -114,6 +142,38 @@ class ClockCliTests(unittest.TestCase):
         self.assertEqual([entry[0] for entry in commands], ["amixer", "aplay"])
         self.assertIn("aplay timed out after 1 seconds", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
+        self.assert_leds_dark_at_end()
+
+    def test_leds_follow_playback_and_go_dark(self):
+        result, commands = self.run_clock(player_sleep=0.5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(self.led_writes[0], ["open", 1])
+        self.assertEqual(self.led_writes[1], ["write", 0x54, 0x00, [1]])
+        self.assertEqual(self.led_writes[2], ["write", 0x54, 0x13, [0xFF] * 3])
+        frames = [w[3] for w in self.led_writes if w[:3] == ["write", 0x54, 0x01]]
+        self.assertTrue(any(any(frame) for frame in frames), "no LED lit")
+        for frame in frames:
+            self.assertEqual(len(frame), 18)
+            self.assertTrue(all(0 <= value <= 128 for value in frame), frame)
+            ## only the 10 wired outputs are ever lit
+            for channel in (3, 5, 7, 9, 11, 13, 15, 17):
+                self.assertEqual(frame[channel], 0, frame)
+        self.assert_leds_dark_at_end()
+
+    def test_led_failure_still_plays(self):
+        result, commands = self.run_clock(smbus="fail")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([entry[0] for entry in commands], ["amixer", "aplay"])
+        self.assertIn("VU LEDs off", result.stderr)
+        self.assertIn("Remote I/O error", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_no_leds_flag_leaves_the_bus_alone(self):
+        result, commands = self.run_clock("--no-leds", player_sleep=0.2)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([entry[0] for entry in commands], ["amixer", "aplay"])
+        self.assertEqual(self.led_writes, [])
 
     def test_timeout_below_one_is_rejected_before_commands_run(self):
         result, commands = self.run_clock("--timeout", "0")

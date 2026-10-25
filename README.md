@@ -1,6 +1,6 @@
 # half-life_clock
 
-Version: **1.1.0** (see `VERSION` and Git tag `v1.1.0`).
+Version: **1.2.0** (see `VERSION` and Git tag `v1.2.0`).
 
 A talking clock that announces the current time using voice clips from
 Half-Life 1 (1998 series), sourced from [Calomel.org](https://calomel.org/).
@@ -10,7 +10,8 @@ Built to run from `cron` on a dedicated Raspberry Pi Zero with a speaker HAT.
 
 - `half-life_clock.py` — Python port (current version). Reads the system
   time, picks the matching `.wav` clips from `wavs/`, sets PCM volume via
-  `amixer`, and plays them back-to-back with `aplay`.
+  `amixer`, and plays them back-to-back with `aplay` while lighting the
+  Speaker pHAT's VU LEDs to follow them.
 - `half-life_clock.pl` — original Perl version.
 - `hlclock.sh` / `hlclock_high.sh` — original cron wrapper scripts that set
   PCM volume (50% / 80%) via `amixer` before calling the Perl script. Their
@@ -43,6 +44,19 @@ ALSA meter plugin and held the HAT's only playback device for 11 days, so
 every later run failed with "Device or resource busy"; a deadlocked `aplay`
 ignores SIGTERM.
 
+## VU LEDs
+
+The Pimoroni Speaker pHAT's 10-LED bar (an SN3218 driver at 0x54 on I2C
+bus 1) follows the clips: their peak level every 1/30 s, a full bar at a
+16-bit peak of 15000, falling over 0.5 s, brightness 128. These are the
+values pivumeter's `speaker-phat` output used. The clock now drives the
+LEDs itself, so the ALSA chain needs no meter plugin; the meter plugin is
+where aplay deadlocked on 2026-10-14. The bar is the clips' level, not the
+level after the `PCM` volume, so it is the same height at every volume.
+
+A missing smbus module, I2C bus or LED chip prints `VU LEDs off: ...`, and
+the time is still spoken with exit status 0. `--no-leds` skips the LEDs.
+
 If `amixer` fails, playback is skipped rather than using an unknown previous
 volume. Failure to run either ALSA command, or a nonzero command exit status,
 prints a diagnostic to stderr and exits with status 1. Successful playback
@@ -59,7 +73,9 @@ python3 -B -m unittest discover -s tests -v
 Tests use temporary fake `amixer` and `aplay` executables; they do not change
 mixer settings or play sound. They cover command failures, missing or
 non-executable commands, invalid volume values, valid boundary values, the
-default volume, a hung player killed by the timeout, and help output. Real audio hardware still needs a separate
+default volume, a hung player killed by the timeout, the LED writes during
+and after playback, playback when the LEDs fail, and help output. A fake
+`smbus` module stands in for the I2C bus. Real audio hardware still needs a separate
 smoke test.
 
 ## Requirements
@@ -68,6 +84,8 @@ smoke test.
 - `aplay` and `amixer` (ALSA utils)
 - A sound card / mixer with a `PCM` control (as on the target Pi's speaker
   HAT — this control name may differ on other hardware)
+- For the VU LEDs: I2C enabled, the `smbus` Python module (`python3-smbus`
+  from apt; `smbus2` also works), and the user in the `i2c` group
 
 ## Cron example
 

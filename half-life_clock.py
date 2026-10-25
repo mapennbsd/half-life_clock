@@ -5,8 +5,14 @@
 #
 
 import argparse
+import bisect
 from pathlib import Path
 import subprocess
+import sys
+import threading
+import time
+import wave
+from array import array
 from datetime import datetime
 
 ## the clips live beside the script, wherever it is deployed
@@ -16,23 +22,134 @@ DEFAULT_VOLUME = 50   # matches hlclock.sh
 ## plugin deadlocked on 2026-10-14) held the only playback device for days
 DEFAULT_TIMEOUT = 60
 
+## Speaker pHAT VU meter: the SN3218 LED driver on I2C, lit the way
+## pivumeter's speaker-phat output did, but from the clips themselves rather
+## than an ALSA meter plugin in the audio path (where pivumeter deadlocked)
+LED_BUS = 1
+LED_ADDRESS = 0x54
+LED_CHANNELS = (0, 1, 2, 4, 6, 8, 10, 12, 14, 16)  # the 10 LEDs of 18 outputs
+LED_BRIGHTNESS = 128      # pivumeter's brightness
+LED_FULL_SCALE = 15000    # a 16-bit peak this high lights the whole bar
+LED_DECAY = 0.5           # seconds for the bar to fall from full (decay_ms)
+LED_FRAME = 1 / 30        # seconds between updates
 
-def run_audio_command(command, timeout):
+
+def warn(message):
+    print(f"half-life_clock: {message}", file=sys.stderr)
+
+
+def clip_levels(paths, frame=LED_FRAME):
+    """(start second, 16-bit peak) per frame of the clips played in series."""
+    timeline, offset = [], 0.0
+    for path in paths:
+        with wave.open(str(path)) as clip:
+            width, rate = clip.getsampwidth(), clip.getframerate()
+            channels, frames = clip.getnchannels(), clip.getnframes()
+            data = clip.readframes(frames)
+        if width == 1:          # unsigned 8-bit, centred on 128
+            samples, centre, scale = data, 128, 256
+        elif width == 2:        # signed 16-bit little-endian
+            samples, centre, scale = array("h", data), 0, 1
+            if sys.byteorder == "big":
+                samples.byteswap()
+        else:
+            raise ValueError(f"{path}: {8 * width}-bit audio")
+        step = max(1, round(rate * frame))
+        for first in range(0, frames, step):
+            chunk = samples[first * channels:(first + step) * channels]
+            peak = max(max(chunk) - centre, centre - min(chunk)) * scale
+            timeline.append((offset + first / rate, peak))
+        offset += frames / rate
+    timeline.append((offset, 0))
+    return timeline
+
+
+class VuMeter:
+    """The pHAT's 10-LED bar, as pivumeter's speaker-phat.c drove it."""
+
+    def __init__(self):
+        try:
+            import smbus
+        except ImportError:
+            import smbus2 as smbus
+        self.bus = smbus.SMBus(LED_BUS)
+        self.write(0x00, [0x01])                # leave shutdown
+        self.write(0x13, [0xFF, 0xFF, 0xFF])    # enable all 18 outputs
+        self.show(0)
+
+    def write(self, register, values):
+        self.bus.write_i2c_block_data(LED_ADDRESS, register, values)
+
+    def show(self, level):
+        bar = level / LED_FULL_SCALE * LED_BRIGHTNESS * 10
+        pwm = [0] * 18
+        for led, channel in enumerate(LED_CHANNELS):
+            pwm[channel] = int(max(0, min(LED_BRIGHTNESS, bar - led * LED_BRIGHTNESS)))
+        self.write(0x01, pwm)
+        self.write(0x16, [0x01])                # latch the new values
+
+    def run(self, timeline, stop):
+        """Follow the timeline from now until stop is set, then go dark."""
+        times = [start for start, _ in timeline]
+        level, fall = 0.0, LED_FULL_SCALE * LED_FRAME / LED_DECAY
+        began = time.monotonic()
+        try:
+            while not stop.wait(LED_FRAME):
+                index = bisect.bisect_right(times, time.monotonic() - began) - 1
+                peak = timeline[index][1] if index >= 0 else 0
+                level = max(peak, level - fall)
+                self.show(level)
+        except Exception as error:
+            warn(f"VU LEDs stopped: {error}")
+        finally:
+            try:
+                self.show(0)
+            except Exception:
+                pass
+
+
+def start_leds(paths):
+    """Light the VU LEDs for these clips; on any failure, warn and play on."""
+    try:
+        timeline = clip_levels(paths)
+        meter = VuMeter()
+    except Exception as error:
+        warn(f"VU LEDs off: {error}")
+        return None
+    stop = threading.Event()
+    thread = threading.Thread(target=meter.run, args=(timeline, stop), daemon=True)
+    thread.start()
+    return stop, thread
+
+
+def stop_leds(leds):
+    if leds:
+        stop, thread = leds
+        stop.set()
+        thread.join(timeout=2)
+
+
+def run_audio_command(command, timeout, leds=None):
     """Stop with a useful diagnostic if an ALSA command fails or hangs."""
     try:
-        ## on timeout, subprocess sends SIGKILL: a deadlocked aplay ignores
-        ## SIGTERM, since its handler deadlocks closing the device
-        subprocess.run(command, check=True, timeout=timeout)
+        process = subprocess.Popen(command)
+    except OSError as error:
+        stop_leds(leds)
+        raise SystemExit(f"Could not run {command[0]}: {error}") from None
+    try:
+        status = process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
+        ## SIGKILL: a deadlocked aplay ignores SIGTERM, since its handler
+        ## deadlocks closing the device
+        process.kill()
+        process.wait()
         raise SystemExit(
             f"{command[0]} timed out after {timeout} seconds and was killed"
         ) from None
-    except subprocess.CalledProcessError as error:
-        raise SystemExit(
-            f"{command[0]} failed (exit status {error.returncode})"
-        ) from None
-    except OSError as error:
-        raise SystemExit(f"Could not run {command[0]}: {error}") from None
+    finally:
+        stop_leds(leds)
+    if status != 0:
+        raise SystemExit(f"{command[0]} failed (exit status {status})")
 
 
 parser = argparse.ArgumentParser(description="Half-Life 1 talking clock")
@@ -45,6 +162,10 @@ parser.add_argument(
     "--timeout", type=int, default=DEFAULT_TIMEOUT,
     help=f"seconds before a hung amixer or aplay is killed "
          f"(default: {DEFAULT_TIMEOUT})"
+)
+parser.add_argument(
+    "--no-leds", action="store_true",
+    help="play without driving the Speaker pHAT's VU LEDs"
 )
 args = parser.parse_args()
 if not 0 <= args.volume <= 100:
@@ -90,5 +211,8 @@ else:
 if ampm:
     audio.append(f"{BASE}/{ampm}.wav")
 
-## Speak the time in series to avoid pauses between files
-run_audio_command(["aplay"] + audio, args.timeout)
+## Speak the time in series to avoid pauses between files, with the VU
+## LEDs following the clips; the LEDs start just before aplay, close enough
+## for speech
+leds = None if args.no_leds else start_leds(audio)
+run_audio_command(["aplay"] + audio, args.timeout, leds)
