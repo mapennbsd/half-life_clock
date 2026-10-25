@@ -57,6 +57,9 @@ the `PCM` softvol control, the bar grows with the volume, but by half as
 much: that control runs from -51 dB to 0 dB, linear in dB under `amixer -M`
 (50% is -25.4 dB), and the full attenuation left the bar nearly dark at
 30-60%. The bar takes half the attenuation in dB (`LED_VOLUME_SHARE`).
+The bar also waits out aplay's own delays, timed on the Pi Zero W: about
+80 ms from launch to sound and 75 ms between files (`LED_START_DELAY`,
+`LED_FILE_GAP`). Retime them on different hardware.
 
 A missing smbus module, I2C bus or LED chip prints `VU LEDs off: ...`, and
 the time is still spoken with exit status 0. `--no-leds` skips the LEDs.

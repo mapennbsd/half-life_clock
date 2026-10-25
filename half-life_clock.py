@@ -40,6 +40,12 @@ LED_FRAME = 1 / 30        # seconds between updates
 ## did, left it nearly dark at the usual 30-60%.
 SOFTVOL_MIN_DB = -51.0
 LED_VOLUME_SHARE = 0.5
+## aplay's own delays, which the LEDs wait out (timed on moron, a Pi Zero W,
+## 2026-10-25, on silent copies of the clips): about 80 ms from launch to
+## sound, and about 75 ms between files, while it drains and reopens the
+## device.  Without them the bar ran a quarter second ahead by "AM".
+LED_START_DELAY = 0.080
+LED_FILE_GAP = 0.075
 
 
 def warn(message):
@@ -53,9 +59,11 @@ def volume_gain(percent):
     return 10 ** (LED_VOLUME_SHARE * SOFTVOL_MIN_DB * (1 - percent / 100) / 20)
 
 
-def clip_levels(paths, gain=1.0, frame=LED_FRAME):
-    """(start second, 16-bit peak after gain) per frame of the clips in series."""
-    timeline, offset = [], 0.0
+def clip_levels(paths, gain=1.0, frame=LED_FRAME,
+                start=LED_START_DELAY, gap=LED_FILE_GAP):
+    """(start second, 16-bit peak after gain) per frame of the clips as aplay
+    plays them: in series, after its start delay and gaps between files."""
+    timeline, offset = [(0.0, 0)], start
     for path in paths:
         with wave.open(str(path)) as clip:
             width, rate = clip.getsampwidth(), clip.getframerate()
@@ -75,7 +83,8 @@ def clip_levels(paths, gain=1.0, frame=LED_FRAME):
             peak = max(max(chunk) - centre, centre - min(chunk)) * scale
             timeline.append((offset + first / rate, peak * gain))
         offset += frames / rate
-    timeline.append((offset, 0))
+        timeline.append((offset, 0))            # dark through the gap
+        offset += gap
     return timeline
 
 
