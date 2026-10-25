@@ -28,6 +28,8 @@ class ClockCliTests(unittest.TestCase):
             "name = Path(sys.argv[0]).name\n"
             "with open(os.environ['HLCLOCK_TEST_LOG'], 'a') as log:\n"
             "    log.write(json.dumps([name, *sys.argv[1:]]) + '\\n')\n"
+            "import time\n"
+            "time.sleep(float(os.environ.get('HLCLOCK_TEST_' + name.upper() + '_SLEEP', '0')))\n"
             "sys.exit(int(os.environ['HLCLOCK_TEST_' + name.upper()]))\n"
         )
         for name in ("amixer", "aplay"):
@@ -35,7 +37,7 @@ class ClockCliTests(unittest.TestCase):
             executable.write_text(stub)
             executable.chmod(0o700)
 
-    def run_clock(self, *arguments, mixer_status=0, player_status=0):
+    def run_clock(self, *arguments, mixer_status=0, player_status=0, player_sleep=0):
         if self.log.exists():
             self.log.unlink()
         environment = os.environ.copy()
@@ -44,6 +46,7 @@ class ClockCliTests(unittest.TestCase):
             HLCLOCK_TEST_LOG=str(self.log),
             HLCLOCK_TEST_AMIXER=str(mixer_status),
             HLCLOCK_TEST_APLAY=str(player_status),
+            HLCLOCK_TEST_APLAY_SLEEP=str(player_sleep),
         )
         result = subprocess.run(
             [sys.executable, "-B", str(SCRIPT), *arguments],
@@ -99,9 +102,23 @@ class ClockCliTests(unittest.TestCase):
                 self.assertEqual(
                     commands[0], ["amixer", "-q", "-M", "sset", "PCM", expected_volume]
                 )
-                self.assertEqual(commands[1][:2], ["aplay", "wavs/time_is.wav"])
+                self.assertEqual(
+                    commands[1][:2], ["aplay", str(ROOT / "wavs" / "time_is.wav")]
+                )
                 for filename in commands[1][1:]:
-                    self.assertTrue((ROOT / filename).is_file(), filename)
+                    self.assertTrue(Path(filename).is_file(), filename)
+
+    def test_hung_player_is_killed_after_timeout(self):
+        result, commands = self.run_clock("--timeout", "1", player_sleep=30)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual([entry[0] for entry in commands], ["amixer", "aplay"])
+        self.assertIn("aplay timed out after 1 seconds", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_timeout_below_one_is_rejected_before_commands_run(self):
+        result, commands = self.run_clock("--timeout", "0")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(commands, [])
 
     def test_noninteger_volume_is_rejected_before_commands_run(self):
         for volume in ("loud", "50.5"):

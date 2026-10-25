@@ -1,7 +1,6 @@
 # half-life_clock
 
-Version: **1.0.0** — the first numbered version (see `VERSION` and Git tag
-`v1.0.0`).
+Version: **1.1.0** (see `VERSION` and Git tag `v1.1.0`).
 
 A talking clock that announces the current time using voice clips from
 Half-Life 1 (1998 series), sourced from [Calomel.org](https://calomel.org/).
@@ -32,11 +31,17 @@ python3 half-life_clock.py --volume 80
 python3 half-life_clock.py --volume 65
 ```
 
-Run from the repo directory (or point `cron` at it with a `cd` first) so the
-relative `wavs/` path resolves correctly.
+The clips are read from the `wavs/` directory beside the script, so it can
+run from any working directory.
 
 `--volume` accepts integers from 0 through 100 inclusive. Invalid values
 exit with status 2 before any mixer or playback command runs.
+
+`--timeout` (default 60 seconds) kills a hung `amixer` or `aplay` with
+SIGKILL and exits with status 1. On 2026-10-14 an `aplay` deadlocked in the
+ALSA meter plugin and held the HAT's only playback device for 11 days, so
+every later run failed with "Device or resource busy"; a deadlocked `aplay`
+ignores SIGTERM.
 
 If `amixer` fails, playback is skipped rather than using an unknown previous
 volume. Failure to run either ALSA command, or a nonzero command exit status,
@@ -54,7 +59,7 @@ python3 -B -m unittest discover -s tests -v
 Tests use temporary fake `amixer` and `aplay` executables; they do not change
 mixer settings or play sound. They cover command failures, missing or
 non-executable commands, invalid volume values, valid boundary values, the
-default volume, and help output. Real audio hardware still needs a separate
+default volume, a hung player killed by the timeout, and help output. Real audio hardware still needs a separate
 smoke test.
 
 ## Requirements
@@ -68,8 +73,8 @@ smoke test.
 
 ```
 # every hour on the hour, normal volume
-0 * * * * cd /home/pi/half-life_clock && python3 half-life_clock.py
+0 * * * * python3 /home/pi/half-life_clock/half-life_clock.py
 
 # every half hour during the day, louder
-*/30 8-20 * * * cd /home/pi/half-life_clock && python3 half-life_clock.py --volume 80
+*/30 8-20 * * * python3 /home/pi/half-life_clock/half-life_clock.py --volume 80
 ```

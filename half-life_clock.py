@@ -5,17 +5,28 @@
 #
 
 import argparse
+from pathlib import Path
 import subprocess
 from datetime import datetime
 
-BASE = "/home/mapenn/hlclock/wavs"
+## the clips live beside the script, wherever it is deployed
+BASE = Path(__file__).resolve().parent / "wavs"
 DEFAULT_VOLUME = 50   # matches hlclock.sh
+## a full announcement takes a few seconds; a hung aplay (the ALSA meter
+## plugin deadlocked on 2026-10-14) held the only playback device for days
+DEFAULT_TIMEOUT = 60
 
 
-def run_audio_command(command):
-    """Stop with a useful diagnostic if an ALSA command fails."""
+def run_audio_command(command, timeout):
+    """Stop with a useful diagnostic if an ALSA command fails or hangs."""
     try:
-        subprocess.run(command, check=True)
+        ## on timeout, subprocess sends SIGKILL: a deadlocked aplay ignores
+        ## SIGTERM, since its handler deadlocks closing the device
+        subprocess.run(command, check=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise SystemExit(
+            f"{command[0]} timed out after {timeout} seconds and was killed"
+        ) from None
     except subprocess.CalledProcessError as error:
         raise SystemExit(
             f"{command[0]} failed (exit status {error.returncode})"
@@ -30,12 +41,20 @@ parser.add_argument(
     help=f"PCM volume percent, 0–100 (default: {DEFAULT_VOLUME}). "
          f"Use 80 for the old hlclock_high.sh behavior."
 )
+parser.add_argument(
+    "--timeout", type=int, default=DEFAULT_TIMEOUT,
+    help=f"seconds before a hung amixer or aplay is killed "
+         f"(default: {DEFAULT_TIMEOUT})"
+)
 args = parser.parse_args()
 if not 0 <= args.volume <= 100:
     parser.error("--volume must be between 0 and 100 (inclusive)")
+if args.timeout < 1:
+    parser.error("--timeout must be at least 1")
 
 ## set PCM volume (was amixer -q -M sset PCM NN% in hlclock*.sh)
-run_audio_command(["amixer", "-q", "-M", "sset", "PCM", f"{args.volume}%"])
+run_audio_command(["amixer", "-q", "-M", "sset", "PCM", f"{args.volume}%"],
+                  args.timeout)
 
 ## collect the system time
 ## 12 hour time
@@ -72,4 +91,4 @@ if ampm:
     audio.append(f"{BASE}/{ampm}.wav")
 
 ## Speak the time in series to avoid pauses between files
-run_audio_command(["aplay"] + audio)
+run_audio_command(["aplay"] + audio, args.timeout)
